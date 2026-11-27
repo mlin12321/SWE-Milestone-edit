@@ -55,10 +55,22 @@ class DirectorFramework(AgentFramework):
         self._bench = Path(env("DIRECTOR_BENCH") or _PROJECT_ROOT.parent / "director-bench")
         self._budget_file = env("DIRECTOR_BUDGET_FILE")
 
+    def _python(self) -> Path:
+        """The standalone Python the SDK checkout's own environment runs on.
+
+        It is mounted too: uv would fetch one from GitHub, which task
+        containers cannot reach.
+        """
+        for line in (self._sdk / ".venv" / "pyvenv.cfg").read_text().splitlines():
+            if line.startswith("home"):
+                return Path(line.split("=", 1)[1].strip()).resolve().parent
+        raise RuntimeError(f"{self._sdk} has no synced environment; run `uv sync` in it")
+
     def get_container_mounts(self) -> List[str]:
         mounts = [
             "-v", f"{self._sdk.resolve()}:{_HOME}-src/sdk:ro",
             "-v", f"{self._bench.resolve()}:{_HOME}-src/bench:ro",
+            "-v", f"{self._python()}:{_HOME}-src/python:ro",
         ]  # fmt: skip
         if self._budget_file:
             # The ledger is shared with every other trial, so it lives on the host.
@@ -100,7 +112,11 @@ try:
     def run(cmd, env=None, cwd=None):
         full = os.environ.copy()
         full.update(env or {{}})
-        done = subprocess.run(cmd, capture_output=True, text=True, env=full, cwd=cwd, timeout=1800)
+        try:
+            done = subprocess.run(cmd, capture_output=True, text=True, env=full, cwd=cwd, timeout=1800)
+        except OSError as missing:
+            print(f"{{cmd[0]}}: {{missing}}")
+            return False
         if done.returncode:
             print(f"{{' '.join(cmd)}} failed: {{(done.stderr or done.stdout)[-800:]}}")
         return done.returncode == 0
@@ -112,28 +128,45 @@ try:
         if not shutil.which('uv'):
             print("Installing uv...")
             if not run(['pip3', 'install', '--break-system-packages', 'uv']):
-                run(['apt-get', 'update'])
-                run(['apt-get', 'install', '-y', 'curl', 'ca-certificates'])
-                subprocess.run('curl -LsSf https://astral.sh/uv/install.sh | sh', shell=True, capture_output=True)
+                # No pip in the image: take the binary out of uv's wheel on PyPI.
+                import io, json, platform, urllib.request, zipfile
+                arch = platform.machine()
+                with urllib.request.urlopen('https://pypi.org/pypi/uv/json', timeout=60) as listing:
+                    files = json.load(listing)['urls']
+                wheel = next(
+                    f['url'] for f in files
+                    if f['filename'].endswith('.whl') and 'manylinux' in f['filename']
+                    and arch in f['filename']
+                )
+                with urllib.request.urlopen(wheel, timeout=300) as download:
+                    archive = zipfile.ZipFile(io.BytesIO(download.read()))
+                name = next(n for n in archive.namelist() if n.endswith('/scripts/uv'))
+                with open('/usr/local/bin/uv', 'wb') as binary:
+                    binary.write(archive.read(name))
+                os.chmod('/usr/local/bin/uv', 0o755)
             if not shutil.which('uv'):
                 raise Exception("uv installation failed")
         skip = shutil.ignore_patterns(
             '.venv', '.git', 'node_modules', '__pycache__', '.pytest_cache', '.mypy_cache',
             '.ruff_cache',
         )
-        for name in ('sdk', 'bench'):
+        for name in ('sdk', 'bench', 'python'):
             shutil.rmtree(f'{{home}}/{{name}}', ignore_errors=True)
             shutil.copytree(f'{{src}}/{{name}}', f'{{home}}/{{name}}', ignore=skip, symlinks=True)
         with open(home + '/sdk/.director-bench-commit', 'w') as marker:
             marker.write({self._sdk_commit()!r})
         # Everything under one folder the agent user can read.
         env = {{
-            'UV_PYTHON_INSTALL_DIR': home + '/python',
+            'UV_PYTHON_DOWNLOADS': 'never',
             'UV_CACHE_DIR': home + '/uv-cache',
             'UV_LINK_MODE': 'copy',
         }}
+        python = next(
+            f'{{home}}/python/bin/{{name}}' for name in sorted(os.listdir(home + '/python/bin'))
+            if name.startswith('python3.')and name[9:].isdigit()
+        )
         print("Installing the director's environment (a few minutes)...")
-        if not run(['uv', 'sync', '--frozen', '--no-dev', '--python', '3.13'], env=env, cwd=home + '/sdk'):
+        if not run(['uv', 'sync', '--frozen', '--no-dev', '--python', python], env=env, cwd=home + '/sdk'):
             raise Exception("uv sync of the director SDK failed")
         if not os.path.exists(home + '/sdk/.venv/bin/agent-server'):
             raise Exception("the director SDK was installed without agent-server")
