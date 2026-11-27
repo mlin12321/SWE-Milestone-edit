@@ -2,7 +2,7 @@
 
 The director's server cannot reach into a container, so it runs inside this
 one, like every other agent here: the init script installs it from the mounted
-software-director-sdk checkout, and the run command starts `director-bench
+software-director-sdk checkout, and the run command starts `director-eval
 queue`. That driver gives each session of the org the milestones that are
 waiting, and creates the `agent-impl-<milestone>` tags itself once the
 session's work was reviewed, accepted and merged into /testbed.
@@ -14,16 +14,22 @@ driver.log, server.log and the server's state with every agent's events.
 Set up from the environment of the process that launches the trial:
 
     DIRECTOR_SDK          software-director-sdk checkout (default: beside this repo)
-    DIRECTOR_BENCH        director-bench checkout (default: beside this repo)
+    DIRECTOR_EVAL_DRIVER        director-eval checkout (default: beside this repo)
     DIRECTOR_MAX_DEPTH    most levels of teams; 1 forbids sub-teams (a solo run)
     DIRECTOR_COST_LIMIT   dollars one trial may spend
     DIRECTOR_BUDGET_FILE, DIRECTOR_BUDGET_USD   a cap shared by every trial
     DIRECTOR_TIMEOUT      seconds the driver gives one invocation (default 17000)
-    DIRECTOR_EXTRA_ARGS   further `director-bench` arguments
+    DIRECTOR_AGENT_JSON   file with a whole agent to use instead of a model, e.g.
+                          Cursor over ACP. Its command is mounted from the host.
+    DIRECTOR_AGENT_HOME_FILES  files of your home folder that agent needs in the
+                          container (its login), comma separated, relative to ~
+    DIRECTOR_EXTRA_ARGS   further `director-eval` arguments
 """
 
+import json
 import os
 import shlex
+import shutil
 import subprocess
 from pathlib import Path
 from typing import List, Optional
@@ -52,8 +58,20 @@ class DirectorFramework(AgentFramework):
         self._base_url = base_url or env("UNIFIED_BASE_URL")
         self._model = model
         self._sdk = Path(env("DIRECTOR_SDK") or _PROJECT_ROOT.parent / "software-director-sdk")
-        self._bench = Path(env("DIRECTOR_BENCH") or _PROJECT_ROOT.parent / "director-bench")
+        self._bench = Path(env("DIRECTOR_EVAL_DRIVER") or _PROJECT_ROOT.parent / "DirectorEvalDriver")
         self._budget_file = env("DIRECTOR_BUDGET_FILE")
+        self._agent_json = Path(env("DIRECTOR_AGENT_JSON")).resolve() if env("DIRECTOR_AGENT_JSON") else None
+        self._home_files = [f.strip() for f in (env("DIRECTOR_AGENT_HOME_FILES") or "").split(",") if f.strip()]
+
+    def _agent_cli(self) -> Optional[Path]:
+        """The host's program behind the agent's command, if it has one."""
+        if not self._agent_json:
+            return None
+        command = json.loads(self._agent_json.read_text()).get("acp_command") or []
+        found = shutil.which(command[0]) if command else None
+        if command and not found:
+            raise RuntimeError(f"{command[0]} (from {self._agent_json}) is not installed on this machine")
+        return Path(found).resolve() if found else None
 
     def _python(self) -> Path:
         """The standalone Python the SDK checkout's own environment runs on.
@@ -78,6 +96,14 @@ class DirectorFramework(AgentFramework):
             folder.mkdir(parents=True, exist_ok=True)
             os.chmod(folder, 0o777)
             mounts += ["-v", f"{folder}:{_BUDGET_DIR}"]
+        if self._agent_json:
+            mounts += ["-v", f"{self._agent_json}:{_HOME}-src/agent.json:ro"]
+            cli = self._agent_cli()
+            if cli:
+                # The whole folder: such a program ships with its own runtime.
+                mounts += ["-v", f"{cli.parent}:{_HOME}-src/agent-cli:ro"]
+        for name in self._home_files:
+            mounts += ["-v", f"{Path.home() / name}:{_HOME}-src/home/{name}:ro"]
         return mounts + self.get_quarantine_mounts()
 
     def get_container_env_vars(self) -> List[str]:
@@ -153,7 +179,7 @@ try:
         for name in ('sdk', 'bench', 'python'):
             shutil.rmtree(f'{{home}}/{{name}}', ignore_errors=True)
             shutil.copytree(f'{{src}}/{{name}}', f'{{home}}/{{name}}', ignore=skip, symlinks=True)
-        with open(home + '/sdk/.director-bench-commit', 'w') as marker:
+        with open(home + '/sdk/.director-eval-commit', 'w') as marker:
             marker.write({self._sdk_commit()!r})
         # Everything under one folder the agent user can read.
         env = {{
@@ -180,6 +206,24 @@ try:
     os.makedirs({_OUT!r}, exist_ok=True)
     for top in (home, {_OUT!r}):
         subprocess.run(['chown', '-R', f'{{uid}}:{{gid}}', top], capture_output=True)
+    cli = {self._agent_cli_name()!r}
+    if cli:
+        # The agent's own program, under the name its command uses.
+        link = '/usr/local/bin/' + cli[0]
+        if os.path.lexists(link):
+            os.remove(link)
+        os.symlink(src + '/agent-cli/' + cli[1], link)
+    user_home = '/home/fakeroot'
+    for name in {self._home_files!r}:
+        target = os.path.join(user_home, name)
+        folder = os.path.dirname(target)
+        os.makedirs(folder, exist_ok=True)
+        shutil.copyfile(src + '/home/' + name, target)
+        os.chmod(target, 0o600)
+        while len(folder) > len(user_home):
+            os.chown(folder, uid, gid)
+            folder = os.path.dirname(folder)
+        os.chown(target, uid, gid)
     print("Director ready")
 except SystemExit:
     pass
@@ -187,6 +231,13 @@ except Exception as e:
     print(f"Director setup failed: {{e}}")
     raise
 """
+
+    def _agent_cli_name(self) -> Optional[tuple]:
+        """(the command's name, the program's file name), for the link in the container."""
+        cli = self._agent_cli()
+        if not cli:
+            return None
+        return (json.loads(self._agent_json.read_text())["acp_command"][0], cli.name)
 
     def _normalize_model(self, model: str) -> str:
         """A LiteLLM model name: as given when it names a provider, through
@@ -215,6 +266,8 @@ except Exception as e:
         if self._budget_file and env("DIRECTOR_BUDGET_USD"):
             ledger = f"{_BUDGET_DIR}/{Path(self._budget_file).name}"
             args += ["--budget-file", ledger, "--budget-usd", env("DIRECTOR_BUDGET_USD")]
+        if self._agent_json:
+            args += ["--agent-json", f"{_HOME}-src/agent.json"]
         if resume:
             args.append("--resume")
         args += shlex.split(env("DIRECTOR_EXTRA_ARGS") or "")
@@ -222,8 +275,8 @@ except Exception as e:
         return (
             # The org merges accepted work into the branch that is checked out.
             "(git -C /testbed symbolic-ref -q HEAD >/dev/null"
-            " || git -C /testbed checkout -q -B director-bench); "
-            f"PYTHONPATH={_HOME}/bench {python} -m director_bench "
+            " || git -C /testbed checkout -q -B director-eval); "
+            f"PYTHONPATH={_HOME}/bench {python} -m director_eval_driver "
             + " ".join(shlex.quote(arg) for arg in args)
         )
 

@@ -1,0 +1,6 @@
+{
+  "kind": "ACPAgent",
+  "acp_server": "custom",
+  "acp_command": ["cursor-agent", "acp"],
+  "acp_model": "grok-4.7[context=256k,reasoning_effort=high,fast=true]"
+}
