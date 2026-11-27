@@ -198,6 +198,28 @@ try:
             raise Exception("the director SDK was installed without agent-server")
         shutil.rmtree(home + '/uv-cache', ignore_errors=True)
 
+    # The director needs git 2.36 or later (`git worktree list -z`); Ubuntu
+    # 22.04 has 2.34. The newer one comes from the git maintainers' archive.
+    version = subprocess.run(['git', '--version'], capture_output=True, text=True).stdout.split()
+    numbers = tuple(int(n) for n in version[2].split('.')[:2]) if len(version) > 2 else (0, 0)
+    if numbers < (2, 36) and os.path.exists('/etc/os-release'):
+        release = dict(
+            line.strip().split('=', 1) for line in open('/etc/os-release') if '=' in line
+        )
+        if release.get('ID', '').strip('"') == 'ubuntu':
+            print(f"git {{version[2]}} is too old for the director: installing a newer one")
+            with open('/etc/apt/sources.list.d/git-core.list', 'w') as source:
+                source.write(
+                    'deb [trusted=yes] https://ppa.launchpadcontent.net/git-core/ppa/ubuntu '
+                    + release['VERSION_CODENAME'].strip('"') + ' main\n'
+                )
+            run(['apt-get', 'update', '-qq', '-o', 'Dir::Etc::sourcelist=sources.list.d/git-core.list',
+                 '-o', 'Dir::Etc::sourceparts=-'])
+            if not run(['apt-get', 'install', '-y', '-qq', 'git'], env={{'DEBIAN_FRONTEND': 'noninteractive'}}):
+                raise Exception("could not install a git new enough for the director")
+        else:
+            raise Exception(f"git {{version[2]}} is too old for the director (2.36 needed)")
+
     try:
         user = pwd.getpwnam('fakeroot')
         uid, gid = user.pw_uid, user.pw_gid

@@ -84,7 +84,12 @@ for step in $STEPS; do
         pids=()
         fresh=(); [[ "$FRESH" == 1 ]] && fresh+=(--new)
         while read -r repo count; do
-            [[ "$ALL_REPOS" == 1 ]] && ./scripts/pull_images.sh --repo "$repo"
+            if [[ "$ALL_REPOS" == 1 ]] && ! docker images --format '{{.Repository}}' | grep -qi "swe-milestone/${repo}__base"; then
+                # pull_images.sh knows a repo by its short name, which is part of the full one.
+                for short in $(./scripts/pull_images.sh --repo ? 2>&1 | grep -o "known: .*" | tr -d "[],'" | cut -d' ' -f2-); do
+                    [[ "$repo" == *"$short"* ]] && ./scripts/pull_images.sh --repo "$short"
+                done
+            fi
             launched="$(uv run python scripts/run_all.py --config "$CONFIG" --repos "$repo" \
                 --milestones "$count" --skip-testbed-copy "${fresh[@]}" 2>&1 | tee -a "$OUT/run.log")"
             # The launcher detaches each repo's worker and prints its process id.
