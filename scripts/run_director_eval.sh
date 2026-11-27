@@ -44,6 +44,9 @@ COST_LIMIT="${COST_LIMIT:-15}"           # dollars one repo's trial may spend
 TIMEOUT="${TIMEOUT:-18000}"              # seconds the harness gives one agent invocation
 PRICE_IN="${PRICE_IN:-3}"                # dollars per million tokens, for an agent that
 PRICE_OUT="${PRICE_OUT:-15}"             #   reports no usage: an assumption, not a bill
+PRICE_CACHE_READ="${PRICE_CACHE_READ:-}" # default: a tenth of PRICE_IN
+# For the Cursor agent file here (Grok 4.7, not fast), xAI's list prices in 2026-11
+# were PRICE_IN=2 PRICE_OUT=6 PRICE_CACHE_READ=0.5; the fast variant costs double.
 
 # --- where things are ---
 export DIRECTOR_SDK="${DIRECTOR_SDK:-$ROOT/../software-director-sdk}"
@@ -53,7 +56,7 @@ OUT="${OUT:-$ROOT/.swe-milestone/director_eval/$TRIAL}"
 
 export DIRECTOR_BUDGET_FILE="$BUDGET_FILE" DIRECTOR_BUDGET_USD="$BUDGET_USD" DIRECTOR_COST_LIMIT="$COST_LIMIT"
 export DIRECTOR_TIMEOUT="$((TIMEOUT - 600))"
-export DIRECTOR_EXTRA_ARGS="${DIRECTOR_EXTRA_ARGS:---price-in $PRICE_IN --price-out $PRICE_OUT}"
+export DIRECTOR_EXTRA_ARGS="${DIRECTOR_EXTRA_ARGS:---price-in $PRICE_IN --price-out $PRICE_OUT${PRICE_CACHE_READ:+ --price-cache-read $PRICE_CACHE_READ}}"
 
 mkdir -p "$OUT"
 SAMPLE="$OUT/sample.json"
