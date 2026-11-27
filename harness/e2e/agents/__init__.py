@@ -18,14 +18,18 @@ from harness.e2e.agents.base import (
 )
 from harness.e2e.agents.claude_code import ClaudeCodeFramework
 from harness.e2e.agents.codex import CodexFramework
+from harness.e2e.agents.director import DirectorFramework
 from harness.e2e.agents.gemini import GeminiFramework
+from harness.e2e.agents.noop import NoopFramework
 from harness.e2e.agents.openhands import OpenHandsFramework
 
 __all__ = [
     "AgentFramework",
     "ClaudeCodeFramework",
     "CodexFramework",
+    "DirectorFramework",
     "GeminiFramework",
+    "NoopFramework",
     "OpenHandsFramework",
     "get_agent_framework",
     "register_framework",
