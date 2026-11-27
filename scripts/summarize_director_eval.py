@@ -43,6 +43,7 @@ def main() -> None:
                 "agents": summary.get("agents"), "cost": result.get("cost"),
                 "cost_estimated": (usage.get("usage") or {}).get("estimated"),
                 "confinement": result.get("confinement"),
+                "web_lookups": usage.get("web_lookups"),
                 "sessions": result.get("sessions"),
             }
         )

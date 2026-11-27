@@ -56,7 +56,11 @@ OUT="${OUT:-$ROOT/.swe-milestone/director_eval/$TRIAL}"
 
 export DIRECTOR_BUDGET_FILE="$BUDGET_FILE" DIRECTOR_BUDGET_USD="$BUDGET_USD" DIRECTOR_COST_LIMIT="$COST_LIMIT"
 export DIRECTOR_TIMEOUT="$((TIMEOUT - 600))"
-export DIRECTOR_EXTRA_ARGS="${DIRECTOR_EXTRA_ARGS:---price-in $PRICE_IN --price-out $PRICE_OUT${PRICE_CACHE_READ:+ --price-cache-read $PRICE_CACHE_READ}}"
+# NO_WEB=1: the agents are told not to look anything up outside the container;
+# the summary lists what they looked up anyway (an agent CLI's own web search
+# is not stopped by the container's network lock).
+NO_WEB="${NO_WEB:-1}"
+export DIRECTOR_EXTRA_ARGS="${DIRECTOR_EXTRA_ARGS:-$([[ $NO_WEB == 1 ]] && echo --no-web) --price-in $PRICE_IN --price-out $PRICE_OUT${PRICE_CACHE_READ:+ --price-cache-read $PRICE_CACHE_READ}}"
 
 mkdir -p "$OUT"
 SAMPLE="$OUT/sample.json"
