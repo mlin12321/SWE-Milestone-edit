@@ -1,0 +1,8 @@
+# The agent-director: an org of agents that may split into teams.
+# Its limits come from the environment (see harness/e2e/agents/director.py):
+#   DIRECTOR_COST_LIMIT, DIRECTOR_BUDGET_FILE + DIRECTOR_BUDGET_USD, DIRECTOR_MAX_DEPTH
+data_root: ${SWE_MILESTONE_DATA_ROOT}
+trial_name: director_sonnet-5.5
+agent: director
+model: claude-sonnet-5-5
+timeout: 18000

@@ -1718,6 +1718,12 @@ echo "Git history truncated successfully"
         # the regional host too, else the documented region-switch (e.g.
         # us-east5 once quota lands) dies under the always-on network lockdown.
         domains = list(WHITELISTED_DOMAINS)
+        # Further hosts an agent needs, e.g. the API of an agent CLI that is
+        # not one of the built-in frameworks (SWE_MILESTONE_EXTRA_DOMAINS=a,b).
+        _extra = [d.strip() for d in os.environ.get("SWE_MILESTONE_EXTRA_DOMAINS", "").split(",") if d.strip()]
+        if _extra:
+            logger.warning(f"SWE_MILESTONE_EXTRA_DOMAINS active — adding to whitelist: {sorted(_extra)}")
+            domains += _extra
         _vloc = os.environ.get("SWE_MILESTONE_VERTEX_LOCATION", "").strip()
         if _vloc and _vloc != "global":
             domains.append(f"{_vloc}-aiplatform.googleapis.com")

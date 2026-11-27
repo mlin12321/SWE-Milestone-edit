@@ -1,0 +1,7 @@
+# Setup check: submits every milestone unchanged and calls no model.
+# python scripts/run_all.py --config trial_configs/noop.yaml --repos navidrome --milestones 1
+data_root: ${SWE_MILESTONE_DATA_ROOT}
+trial_name: noop
+agent: noop
+model: none
+timeout: 600
