@@ -211,7 +211,7 @@ try:
             with open('/etc/apt/sources.list.d/git-core.list', 'w') as source:
                 source.write(
                     'deb [trusted=yes] https://ppa.launchpadcontent.net/git-core/ppa/ubuntu '
-                    + release['VERSION_CODENAME'].strip('"') + ' main\n'
+                    + release['VERSION_CODENAME'].strip('"') + ' main\\n'
                 )
             run(['apt-get', 'update', '-qq', '-o', 'Dir::Etc::sourcelist=sources.list.d/git-core.list',
                  '-o', 'Dir::Etc::sourceparts=-'])
