@@ -20,7 +20,7 @@ SEED="${SEED:-20261127}"                 # fixes the sample
 NUM_TASKS="${NUM_TASKS:-30}"             # milestones allotted at most, over all repos
 REPOS="${REPOS:-}"                       # only repos whose name contains one of these (comma separated)
 ALL_REPOS="${ALL_REPOS:-0}"              # 1: also draw repos whose images are not pulled, and pull them
-STEPS="${STEPS:-sample run summarize}"
+STEPS="${STEPS:-sample run summarize keep}"
 FRESH="${FRESH:-0}"                      # 1: start new trials instead of resuming the ones found
 
 # --- the agents ---
@@ -52,7 +52,11 @@ PRICE_CACHE_READ="${PRICE_CACHE_READ:-}" # default: a tenth of PRICE_IN
 export DIRECTOR_SDK="${DIRECTOR_SDK:-$ROOT/../software-director-sdk}"
 export DIRECTOR_EVAL_DRIVER="${DIRECTOR_EVAL_DRIVER:-$ROOT/../DirectorEvalDriver}"
 TRIAL="${TRIAL:-director_seed${SEED}_n${NUM_TASKS}}"
-OUT="${OUT:-$ROOT/.swe-milestone/director_eval/$TRIAL}"
+# Everything a run leaves is kept here, outside the repositories: the sample,
+# the summary, and per repo the trial's evaluation, the harness logs and the
+# record of the director (results, logs, every agent's events).
+RESULTS_ROOT="${RESULTS_ROOT:-$ROOT/../DirectorEvalResults/swe-milestone}"
+OUT="${OUT:-$RESULTS_ROOT/$TRIAL}"
 
 export DIRECTOR_BUDGET_FILE="$BUDGET_FILE" DIRECTOR_BUDGET_USD="$BUDGET_USD" DIRECTOR_COST_LIMIT="$COST_LIMIT"
 export DIRECTOR_TIMEOUT="$((TIMEOUT - 600))"
@@ -106,6 +110,21 @@ for repo, count in json.load(open(sys.argv[1]))['milestones'].items(): print(rep
     summarize)
         uv run python scripts/summarize_director_eval.py --trial "$TRIAL" --ledger "$BUDGET_FILE" \
             --out "$OUT/summary.json" | tee "$OUT/summary.txt"
+        ;;
+    keep)
+        # The trial folders in the data checkout stay as they are; this is the
+        # copy that lasts, without the agents' checkouts of the repository.
+        for trial in "$SWE_MILESTONE_DATA_ROOT"/*/e2e_trial/"$TRIAL"*; do
+            [[ -d "$trial" ]] || continue
+            dest="$OUT/trials/$(basename "$(dirname "$(dirname "$trial")")")/$(basename "$trial")"
+            mkdir -p "$dest"
+            for part in evaluation log orchestrator.log trial_metadata.json e2e_config.yaml \
+                milestone_selection.txt TASK_QUEUE.md; do
+                [[ -e "$trial/$part" ]] && cp -a "$trial/$part" "$dest/"
+            done
+            PYTHONPATH="$DIRECTOR_EVAL_DRIVER" python3 -m director_eval_driver.traces \
+                "$trial/e2e_workspace/director" "$dest/director"
+        done
         ;;
     *) echo "unknown step: $step" >&2; exit 2 ;;
     esac
