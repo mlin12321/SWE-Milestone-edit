@@ -4,6 +4,7 @@
 # environment:
 #
 #   NUM_TASKS=3 ./scripts/run_director_eval.sh
+#   ARM=claude-code REPOS=go-zero NUM_TASKS=10 ./scripts/run_director_eval.sh
 #   STEPS=summarize TRIAL=director_seed20261127_n30 ./scripts/run_director_eval.sh
 #
 # Starting it again resumes the trials it finds; the budget ledger remembers
@@ -20,8 +21,16 @@ SEED="${SEED:-20261127}"                 # fixes the sample
 NUM_TASKS="${NUM_TASKS:-30}"             # milestones allotted at most, over all repos
 REPOS="${REPOS:-}"                       # only repos whose name contains one of these (comma separated)
 ALL_REPOS="${ALL_REPOS:-0}"              # 1: also draw repos whose images are not pulled, and pull them
-STEPS="${STEPS:-sample run summarize}"
+STEPS="${STEPS:-sample run summarize keep}"
 FRESH="${FRESH:-0}"                      # 1: start new trials instead of resuming the ones found
+
+# --- the arm: what is compared with what, on the same milestones ---
+#   director        the director as it is (it may split into teams; it rarely does)
+#   director-solo   the director with sub-teams forbidden
+#   director-teams  the director, its lead told to split a request of several tasks
+#   claude-code     the benchmark's own single agent, held to COST_LIMIT dollars
+# scripts/compare_arms.py puts the trials of several arms in one table.
+ARM="${ARM:-director}"
 
 # --- the agents ---
 MODEL="${MODEL:-claude-sonnet-5-5}"      # the director's agents call it; key in UNIFIED_API_KEY
@@ -36,10 +45,17 @@ export SWE_MILESTONE_EXTRA_DOMAINS="${AGENT_DOMAINS:-}"
 # A trial needs some key to start; an agent with its own login does not use it.
 [[ -n "$AGENT_JSON" ]] && export UNIFIED_API_KEY="${UNIFIED_API_KEY:-unused}"
 export DIRECTOR_MAX_DEPTH="${DIRECTOR_MAX_DEPTH:-}"   # 1 = no sub-teams (a solo run)
+ARM_ARGS=""
+case "$ARM" in
+director) ;;
+director-solo) export DIRECTOR_MAX_DEPTH=1 ;;
+director-teams) ARM_ARGS="--split-hint" ;;
+claude-code) ;;
+*) echo "unknown ARM: $ARM" >&2; exit 2 ;;
+esac
 
 # --- limits ---
 BUDGET_USD="${BUDGET_USD:-40}"           # every trial on this ledger, together
-BUDGET_FILE="${BUDGET_FILE:-$ROOT/.swe-milestone/director_budget.json}"
 COST_LIMIT="${COST_LIMIT:-15}"           # dollars one repo's trial may spend
 TIMEOUT="${TIMEOUT:-18000}"              # seconds the harness gives one agent invocation
 PRICE_IN="${PRICE_IN:-3}"                # dollars per million tokens, for an agent that
@@ -51,8 +67,13 @@ PRICE_CACHE_READ="${PRICE_CACHE_READ:-}" # default: a tenth of PRICE_IN
 # --- where things are ---
 export DIRECTOR_SDK="${DIRECTOR_SDK:-$ROOT/../software-director-sdk}"
 export DIRECTOR_EVAL_DRIVER="${DIRECTOR_EVAL_DRIVER:-$ROOT/../DirectorEvalDriver}"
-TRIAL="${TRIAL:-director_seed${SEED}_n${NUM_TASKS}}"
-OUT="${OUT:-$ROOT/.swe-milestone/director_eval/$TRIAL}"
+TRIAL="${TRIAL:-${ARM}_${MODEL}_seed${SEED}_n${NUM_TASKS}}"
+# Everything a run leaves is kept here, outside the repositories: the sample,
+# the summary, and per repo the trial's evaluation, the harness logs and the
+# record of the director (results, logs, every agent's events).
+RESULTS_ROOT="${RESULTS_ROOT:-$ROOT/../data/DirectorEvalResults/swe-milestone}"
+OUT="${OUT:-$RESULTS_ROOT/$TRIAL}"
+BUDGET_FILE="${BUDGET_FILE:-$OUT/budget.json}"   # one ledger per trial unless shared
 
 export DIRECTOR_BUDGET_FILE="$BUDGET_FILE" DIRECTOR_BUDGET_USD="$BUDGET_USD" DIRECTOR_COST_LIMIT="$COST_LIMIT"
 export DIRECTOR_TIMEOUT="$((TIMEOUT - 600))"
@@ -60,13 +81,17 @@ export DIRECTOR_TIMEOUT="$((TIMEOUT - 600))"
 # the summary lists what they looked up anyway (an agent CLI's own web search
 # is not stopped by the container's network lock).
 NO_WEB="${NO_WEB:-1}"
-export DIRECTOR_EXTRA_ARGS="${DIRECTOR_EXTRA_ARGS:-$([[ $NO_WEB == 1 ]] && echo --no-web) --price-in $PRICE_IN --price-out $PRICE_OUT${PRICE_CACHE_READ:+ --price-cache-read $PRICE_CACHE_READ}}"
+if [[ "$ARM" == claude-code ]]; then
+    export CLAUDE_MAX_BUDGET_USD="$COST_LIMIT"
+    [[ $NO_WEB == 1 ]] && export CLAUDE_EXTRA_ARGS="${CLAUDE_EXTRA_ARGS:---disallowedTools WebSearch,WebFetch}"
+fi
+export DIRECTOR_EXTRA_ARGS="${DIRECTOR_EXTRA_ARGS:-$([[ $NO_WEB == 1 ]] && echo --no-web) $ARM_ARGS --price-in $PRICE_IN --price-out $PRICE_OUT${PRICE_CACHE_READ:+ --price-cache-read $PRICE_CACHE_READ}}"
 
 mkdir -p "$OUT"
 SAMPLE="$OUT/sample.json"
 CONFIG="$OUT/trial.yaml"
 {
-    echo "trial=$TRIAL seed=$SEED num=$NUM_TASKS model=$MODEL agent_json=${DIRECTOR_AGENT_JSON:-none}"
+    echo "arm=$ARM trial=$TRIAL seed=$SEED num=$NUM_TASKS model=$MODEL agent_json=${DIRECTOR_AGENT_JSON:-none}"
     echo "budget=\$$BUDGET_USD ($BUDGET_FILE) per_repo=\$$COST_LIMIT timeout=${TIMEOUT}s"
     echo "sdk=$(git -C "$DIRECTOR_SDK" rev-parse --short HEAD) driver=$(git -C "$DIRECTOR_EVAL_DRIVER" rev-parse --short HEAD) harness=$(git rev-parse --short HEAD)"
 } | tee "$OUT/settings.txt"
@@ -79,8 +104,9 @@ for step in $STEPS; do
             --repos "$REPOS" "${flags[@]}" --out "$SAMPLE"
         ;;
     run)
-        printf 'data_root: ${SWE_MILESTONE_DATA_ROOT}\ntrial_name: %s\nagent: director\nmodel: %s\ntimeout: %s\n' \
-            "$TRIAL" "$MODEL" "$TIMEOUT" > "$CONFIG"
+        agent=director; [[ "$ARM" == claude-code ]] && agent=claude-code
+        printf 'data_root: ${SWE_MILESTONE_DATA_ROOT}\ntrial_name: %s\nagent: %s\nmodel: %s\ntimeout: %s\n' \
+            "$TRIAL" "$agent" "$MODEL" "$TIMEOUT" > "$CONFIG"
         pids=()
         fresh=(); [[ "$FRESH" == 1 ]] && fresh+=(--new)
         while read -r repo count; do
@@ -106,6 +132,24 @@ for repo, count in json.load(open(sys.argv[1]))['milestones'].items(): print(rep
     summarize)
         uv run python scripts/summarize_director_eval.py --trial "$TRIAL" --ledger "$BUDGET_FILE" \
             --out "$OUT/summary.json" | tee "$OUT/summary.txt"
+        ;;
+    keep)
+        # The trial folders in the data checkout stay as they are; this is the
+        # copy that lasts, without the agents' checkouts of the repository.
+        for trial in "$SWE_MILESTONE_DATA_ROOT"/*/e2e_trial/"$TRIAL"*; do
+            [[ -d "$trial" ]] || continue
+            dest="$OUT/trials/$(basename "$(dirname "$(dirname "$trial")")")/$(basename "$trial")"
+            mkdir -p "$dest"
+            for part in evaluation log orchestrator.log trial_metadata.json e2e_config.yaml \
+                milestone_selection.txt TASK_QUEUE.md; do
+                [[ -e "$trial/$part" ]] && cp -a "$trial/$part" "$dest/"
+            done
+            for part in agent_stats.json; do
+                [[ -e "$trial/$part" ]] && cp -a "$trial/$part" "$dest/"
+            done
+            [[ -d "$trial/e2e_workspace/director" ]] && PYTHONPATH="$DIRECTOR_EVAL_DRIVER" \
+                python3 -m director_eval_driver.traces "$trial/e2e_workspace/director" "$dest/director"
+        done
         ;;
     *) echo "unknown step: $step" >&2; exit 2 ;;
     esac
