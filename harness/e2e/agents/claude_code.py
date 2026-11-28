@@ -3,6 +3,7 @@
 import logging
 import os
 import re
+import shlex
 from pathlib import Path
 from typing import List, Optional
 
@@ -206,6 +207,39 @@ class ClaudeCodeFramework(AgentFramework):
         if self._agent_version in _CLAUDE_CODE_VERSION_CHANNELS:
             return True
         return self._agent_version is None or actual_version == self._agent_version
+
+    # Where a capped trial keeps what its invocations have cost so far.
+    _SPENT_FILE = "/tmp/claude_code_spent_usd"
+
+    def _within_budget(self, cmd_parts: List[str], input_path: str) -> str:
+        """The command, held to ``CLAUDE_MAX_BUDGET_USD`` dollars for the whole trial.
+
+        Claude Code's own ``--max-budget-usd`` counts one invocation, and a
+        trial resumes its session many times. So each invocation gets what is
+        left of the cap, and adds what it cost to a file in the container.
+        Without the variable the command is as it always was.
+        """
+        # Further arguments for every invocation, e.g. tools to deny.
+        cmd_parts = cmd_parts + shlex.split(os.environ.get("CLAUDE_EXTRA_ARGS") or "")
+        cap = os.environ.get("CLAUDE_MAX_BUDGET_USD")
+        if not cap:
+            return " ".join(cmd_parts + ["<", input_path])
+        cap = f"{float(cap):.2f}"
+        spent, last = self._SPENT_FILE, "/tmp/claude_code_last.json"
+        command = " ".join(cmd_parts + ["--max-budget-usd", '"$left"', "<", input_path])
+        used_up = (
+            '{"type":"result","subtype":"error_max_budget_usd","is_error":true,'
+            f'"result":"the budget of ${cap} for this trial is used up","total_cost_usd":0}}'
+        )
+        return (
+            f'spent=$(cat {spent} 2>/dev/null || echo 0); '
+            f'left=$(awk -v c={cap} -v s="$spent" \'BEGIN{{printf "%.2f", c-s}}\'); '
+            f'if awk -v l="$left" \'BEGIN{{exit !(l < 0.05)}}\'; then echo \'{used_up}\'; exit 0; fi; '
+            f'{command} > {last}; code=$?; cat {last}; '
+            f'cost=$(grep -o \'"total_cost_usd": *[0-9.]*\' {last} | tail -1 | grep -o \'[0-9.]*$\'); '
+            f'awk -v s="$spent" -v c="${{cost:-0}}" \'BEGIN{{printf "%.4f\\n", s+c}}\' > {spent}; '
+            f'exit $code'
+        )
 
     def _build_effort_args(self) -> List[str]:
         """Return Claude Code CLI args for reasoning effort.
@@ -616,9 +650,7 @@ except Exception as e:
 
         cmd_parts.extend(self._build_effort_args())
 
-        cmd_parts.extend(["<", prompt_path])
-
-        return " ".join(cmd_parts)
+        return self._within_budget(cmd_parts, prompt_path)
 
     def build_resume_command(
         self,
@@ -649,6 +681,4 @@ except Exception as e:
 
         cmd_parts.extend(self._build_effort_args())
 
-        cmd_parts.extend(["<", message_path])
-
-        return " ".join(cmd_parts)
+        return self._within_budget(cmd_parts, message_path)
